@@ -1,0 +1,135 @@
+// This is your Prisma schema file with ZenStack access control policies
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+  SYSTEM
+}
+
+model User {
+  id              String                    @id @default(cuid())
+  email           String?                   @unique
+  name            String?
+  phone           String                    @unique
+  image           String?                   // Added for profile pictures
+  isPhoneVerified Boolean                   @default(false)
+  hashedRt        String?
+  
+  // Relations
+  contacts        Contact[]                 @relation("UserContacts")
+  contactOf       Contact[]                 @relation("UserIsContactOf")
+  participants    ConversationParticipant[]
+  messagesSent    Message[]                 @relation("sender")
+  messageReads    MessageRead[]
+
+  createdAt       DateTime                  @default(now())
+
+  // Access Control
+  @@allow('create', true)
+  @@allow('read', true)
+  @@allow('update', auth().id == id)
+  @@allow('delete', auth().id == id)
+}
+
+model Contact {
+  id        String   @id @default(cuid())
+  owner     User     @relation("UserContacts", fields: [ownerId], references: [id])
+  ownerId   String
+  friend    User     @relation("UserIsContactOf", fields: [friendId], references: [id])
+  friendId  String
+  createdAt DateTime @default(now())
+ 
+  @@unique([ownerId, friendId]) 
+
+  @@allow('read', auth().id == ownerId)
+  @@allow('create', auth().id == ownerId)
+  @@allow('delete', auth().id == ownerId)
+}
+
+model Conversation {
+  id                 String                    @id @default(cuid())
+  isGroup            Boolean                   @default(false)
+  name               String?                   // Group name
+  image              String?                   // Group image
+  createdAt          DateTime                  @default(now())
+  
+  // Optimization fields for the Chat List UI
+  updatedAt          DateTime                  @updatedAt
+  lastMessageAt      DateTime                  @default(now())
+  lastMessageContent String?
+
+  participants       ConversationParticipant[]
+  messages           Message[]
+
+  // Access Control: Only participants can see the conversation
+  @@allow('read', participants?[userId == auth().id])
+  // Allow creation if the user is authenticated
+  @@allow('create', auth().id != null)
+}
+
+model ConversationParticipant {
+  id             String       @id @default(cuid())
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  conversationId String
+  
+  user           User         @relation(fields: [userId], references: [id])
+  userId         String
+
+  role           String?      @default("member") // "admin" or "member"
+  joinedAt       DateTime     @default(now())
+
+  @@unique([conversationId, userId])
+
+  // Allow adding participants if you are in the chat or it's a new chat
+  @@allow('create', auth().id != null)         
+  @@allow('read', conversation.participants?[userId == auth().id])
+  @@allow('delete', conversation.participants?[userId == auth().id && role == 'admin'] || auth().id == userId)
+}
+
+model Message {
+  id             String         @id @default(cuid())
+  conversation   Conversation   @relation(fields: [conversationId], references: [id])
+  conversationId String
+
+  sender         User           @relation("sender", fields: [senderId], references: [id])
+  senderId       String
+
+  content        String?
+  type           MessageType    @default(TEXT)
+  meta           Json?          // For file sizes, image dimensions, etc.
+  createdAt      DateTime       @default(now())
+  reads          MessageRead[]
+
+  // Access Control
+  @@allow('read', conversation.participants?[userId == auth().id])
+  // Users can only send messages to conversations they are part of
+  @@allow('create', auth().id == senderId && conversation.participants?[userId == auth().id])
+}
+
+model MessageRead {
+  id        String   @id @default(cuid())
+  message   Message  @relation(fields: [messageId], references: [id])
+  messageId String
+  
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  
+  readAt    DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@index([userId])
+  @@index([messageId])
+
+  @@allow('create', auth().id == userId)
+  @@allow('read', message.conversation.participants?[userId == auth().id])
+}

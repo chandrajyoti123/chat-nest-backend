@@ -1,0 +1,236 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+  SYSTEM
+}
+
+enum CallType {
+  AUDIO
+  VIDEO
+}
+
+enum CallStatus {
+  RINGING
+  ONGOING
+  ENDED
+  MISSED
+  REJECTED
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String?   @unique
+  name            String?
+  phone           String    @unique
+  isPhoneVerified Boolean   @default(false)
+  hashedRt        String?
+  about           String   @default("Hey there! I am using GetUno")
+  isOnline        Boolean  @default(false)
+  lastSeenAt      DateTime?
+  contacts        Contact[]          @relation("UserContacts")
+  contactOf       Contact[]          @relation("UserIsContactOf")
+
+  participants    ConversationParticipant[]
+  messagesSent    Message[]                 @relation("sender")
+  messageReads    MessageRead[]
+  MessageDeletes  MessageDelete[]
+  callsMade       Call[]            @relation("CallsMade")      
+  callsReceived   CallParticipant[] @relation("CallsReceived")
+
+  createdAt       DateTime  @default(now())
+
+  @@allow('create', true)
+  @@allow('read', true)
+  @@allow('update', true)
+  @@allow('delete', auth().id == id)
+}
+
+model Contact {
+  id        String @id @default(cuid())
+  owner     User   @relation("UserContacts", fields: [ownerId], references: [id])
+  ownerId   String
+  friend    User   @relation("UserIsContactOf", fields: [friendId], references: [id])
+  friendId  String
+  createdAt DateTime @default(now())
+ 
+  @@unique([ownerId, friendId]) 
+
+  @@allow('read', auth().id == ownerId)
+  @@allow('create', auth().id == ownerId)
+  @@allow('delete', auth().id == ownerId)
+}
+
+model Conversation {
+  id         String   @id @default(cuid())
+  isGroup    Boolean  @default(false)
+  name       String?
+  createdAt  DateTime @default(now())
+  participants ConversationParticipant[]
+  messages     Message[]
+  calls        Call[]
+
+  @@allow('read', participants?[userId == auth().id])
+  @@allow('create', true)
+}
+
+model ConversationParticipant {
+  id             String        @id @default(cuid())
+  conversation   Conversation  @relation(fields: [conversationId], references: [id])
+  conversationId String
+  
+  user           User          @relation(fields: [userId], references: [id])
+  userId         String
+
+  role           String?       @default("member")
+
+  joinedAt       DateTime      @default(now())
+
+  @@unique([conversationId, userId])
+
+  @@allow('create', true)         
+  @@allow('read', conversation.participants?[userId == auth().id])
+
+}
+
+model Message {
+  id             String        @id @default(cuid())
+  conversation   Conversation  @relation(fields: [conversationId], references: [id])
+  conversationId String
+  sender         User          @relation("sender",fields: [senderId], references: [id])
+  senderId       String
+  content        String?
+  type           MessageType   @default(TEXT)
+  meta           Json?
+  replyTo        Message?      @relation("MessageReply", fields: [replyToId], references: [id])
+  replyToId      String?
+  deletedForAll  Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+  reads          MessageRead[]
+  deletions      MessageDelete[]
+  replies        Message[]     @relation("MessageReply")
+
+
+  @@allow('read', conversation.participants?[userId == auth().id])
+  @@allow('create', auth().id == senderId && conversation.participants?[userId == auth().id])
+  @@allow(
+    'update',
+    (
+      type == SYSTEM &&
+      conversation.participants?[userId == auth().id]
+    ) ||
+    (
+      type != SYSTEM &&
+      auth().id == senderId
+    )
+  )
+}
+
+
+model MessageRead {
+  id        String   @id @default(cuid())
+  message   Message  @relation(fields: [messageId], references: [id])
+  messageId String
+  
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  
+  readAt    DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@index([userId])
+  @@index([messageId])
+
+  @@allow('create', auth().id == userId)
+  @@allow('read', message.conversation.participants?[userId == auth().id])
+}
+
+
+
+model MessageDelete {
+  id        String   @id @default(cuid())
+  message   Message  @relation(fields: [messageId], references: [id])
+  messageId String
+
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+
+  deletedAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+
+  @@allow('create', message.conversation.participants?[userId == auth().id])
+  @@allow('read', message.conversation.participants?[userId == auth().id])
+  @@allow('update', message.conversation.participants?[userId == auth().id])
+}
+
+
+model Call {
+  id              String   @id @default(cuid())
+
+  conversationId  String
+  conversation    Conversation @relation(fields: [conversationId], references: [id])
+
+  callerId        String
+  caller          User     @relation("CallsMade", fields: [callerId], references: [id])
+
+  type            CallType
+  status          CallStatus @default(RINGING)
+
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime @default(now())
+
+  participants    CallParticipant[]
+
+  @@allow('create', auth().id == callerId)
+  @@allow('read', conversation.participants?[userId == auth().id])
+}
+
+
+model CallParticipant {
+  id        String   @id @default(cuid())
+
+  callId    String
+  call      Call     @relation(fields: [callId], references: [id])
+
+  userId    String
+  user      User     @relation("CallsReceived", fields: [userId], references: [id])
+
+  joinedAt  DateTime?
+  leftAt    DateTime?
+
+  @@unique([callId, userId])
+  
+  @@allow('create', auth().id == userId && call.conversation.participants?[userId == auth().id])
+
+  @@allow('read', call.conversation.participants?[userId == auth().id])
+
+  @@allow('update', auth().id == userId )
+}
+
+
+
+
+
+
+
+
+
+
